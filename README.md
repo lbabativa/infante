@@ -65,7 +65,7 @@ Con `NOVACALL_WEBHOOK_URL` cada cambio se notifica por POST: `booking.created`, 
 
 1. En MongoDB Atlas → **Network Access**, permite `0.0.0.0/0` (Vercel no tiene IP fija).
 2. En Vercel → Settings → Environment Variables: `MONGODB_URI`, `MONGODB_DB`, `ADMIN_PASSWORD`, `SESSION_SECRET`, `NEXT_PUBLIC_SITE_URL`, `CRON_SECRET`.
-3. Programa `/api/cron/recordatorios` cada 15 min (Vercel Cron o cualquier scheduler).
+3. El cron ya está en `vercel.json`: todos los días a las 00:00 UTC (7:00 p. m. en Bogotá) envía los recordatorios de las citas del día siguiente y los agradecimientos. Vercel envía `Authorization: Bearer <CRON_SECRET>` automáticamente. En plan Hobby solo se permiten crons diarios; para el recordatorio del mismo día (3 h antes) hace falta plan Pro (`*/15 * * * *`) o un scheduler externo.
 
 Todo se guarda en MongoDB, incluidas las fotos del equipo (colección `media`), así que funciona en entornos sin disco persistente. Las reservas simultáneas se serializan con una transacción + candado por sede y día, de modo que no hay dobles reservas.
 
