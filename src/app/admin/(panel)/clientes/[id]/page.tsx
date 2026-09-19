@@ -2,17 +2,16 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { saveClient } from "@/app/admin/actions";
 import { PageTitle, StatusBadge } from "@/components/admin/ui";
-import { get } from "@/lib/db";
 import { clock, money, shortDate } from "@/lib/format";
-import { listBookings } from "@/lib/repo";
+import { getClient, listBookings } from "@/lib/repo";
 
 export const metadata = { title: "Cliente" };
 
 export default async function ClientePage({ params }: { params: Promise<{ id: string }> }) {
   const id = Number((await params).id);
-  const c = get<{ id: number; name: string; phone: string; email: string | null; notes: string | null; created_at: string }>("SELECT * FROM clients WHERE id = ?", id);
+  const c = await getClient(id);
   if (!c) notFound();
-  const bookings = listBookings({ clientId: id, order: "desc" });
+  const bookings = await listBookings({ clientId: id, order: "desc" });
   const spent = bookings.filter((b) => b.status === "completed").reduce((a, b) => a + (b.total_price ?? 0), 0);
 
   return (

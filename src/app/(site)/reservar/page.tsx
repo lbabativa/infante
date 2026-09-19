@@ -6,12 +6,13 @@ export const metadata: Metadata = { title: "Reservar cita", description: "Agenda
 
 export default async function ReservarPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const sp = await searchParams;
+  const [categories, team, locations] = await Promise.all([publicCatalog(), publicTeam(), publicLocations()]);
   return (
     <div className="pt-32">
       <BookingWizard
-        categories={publicCatalog()}
-        team={publicTeam()}
-        locations={publicLocations()}
+        categories={categories}
+        team={team}
+        locations={locations}
         initial={{
           serviceId: Number(sp.servicio) || undefined,
           staffId: Number(sp.especialista) || undefined,

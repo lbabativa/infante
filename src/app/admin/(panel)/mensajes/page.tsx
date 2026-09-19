@@ -1,14 +1,13 @@
 import Link from "next/link";
 import { markMessageSent, runAutomationsNow, saveSettings } from "@/app/admin/actions";
 import { Empty, PageTitle } from "@/components/admin/ui";
-import { all, getSetting } from "@/lib/db";
+import { col, getSettings, NO_ID } from "@/lib/db";
 import { prettyPhone } from "@/lib/format";
-import { waLink } from "@/lib/notify";
+import { waLink, type Message } from "@/lib/notify";
 import { defaultTemplates } from "@/lib/seed-data";
 
 export const metadata = { title: "Mensajes" };
 
-type Msg = { id: number; booking_id: number | null; channel: string; to_addr: string; template: string; body: string; status: string; provider: string | null; error: string | null; created_at: string };
 
 const STATUS: Record<string, { label: string; cls: string }> = {
   sent: { label: "Enviado", cls: "bg-emerald-100 text-emerald-800" },
@@ -20,7 +19,10 @@ const VARS = ["{nombre}", "{servicios}", "{fecha}", "{hora}", "{especialista}", 
 
 export default async function MensajesPage({ searchParams }: { searchParams: Promise<{ estado?: string }> }) {
   const { estado } = await searchParams;
-  const msgs = all<Msg>(`SELECT * FROM messages ${estado ? "WHERE status = ?" : ""} ORDER BY id DESC LIMIT 200`, ...(estado ? [estado] : []));
+  const [msgs, settings] = await Promise.all([
+    (await col<Message>("messages")).find(estado ? { status: estado as Message["status"] } : {}, NO_ID).sort({ id: -1 }).limit(200).toArray(),
+    getSettings(),
+  ]);
   const apiOn = !!(process.env.WHATSAPP_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID);
 
   return (
@@ -66,7 +68,7 @@ export default async function MensajesPage({ searchParams }: { searchParams: Pro
                   <span className={`rounded-full px-2 py-0.5 font-semibold ${STATUS[m.status]?.cls}`}>{STATUS[m.status]?.label ?? m.status}</span>
                   <span>{defaultTemplates[m.template]?.label ?? m.template}</span>
                   <span>→ {m.channel === "whatsapp" ? prettyPhone(m.to_addr) : m.to_addr}</span>
-                  <span>· {m.created_at.slice(0, 16)} UTC</span>
+                  <span>· {m.created_at.slice(0, 16).replace("T", " ")} UTC</span>
                   {m.booking_id && (
                     <Link href={`/admin/citas/${m.booking_id}`} className="underline">
                       ver cita
@@ -100,7 +102,7 @@ export default async function MensajesPage({ searchParams }: { searchParams: Pro
         {Object.entries(defaultTemplates).map(([key, t]) => (
           <label key={key} className="field card p-4">
             {t.label}
-            <textarea name={key} rows={7} defaultValue={getSetting(key)} className="input font-mono !text-xs" />
+            <textarea name={key} rows={7} defaultValue={settings[key]} className="input font-mono !text-xs" />
           </label>
         ))}
         <div className="lg:col-span-2">

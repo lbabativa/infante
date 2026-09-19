@@ -1,10 +1,10 @@
 import "server-only";
-import { getSetting } from "./db";
+import { getSettings } from "./db";
 import { catalog, listLocations, listStaff } from "./repo";
 import type { PublicCategory, PublicLocation, PublicStaff } from "./public-types";
 
-export function publicCatalog(): PublicCategory[] {
-  return catalog().map((c) => ({
+export async function publicCatalog(): Promise<PublicCategory[]> {
+  return (await catalog()).map((c) => ({
     id: c.id,
     slug: c.slug,
     name: c.name,
@@ -21,8 +21,8 @@ export function publicCatalog(): PublicCategory[] {
   }));
 }
 
-export function publicTeam(): PublicStaff[] {
-  return listStaff().map(({ id, slug, name, role, bio, photo_url, instagram, location_id, service_ids, bookable }) => ({
+export async function publicTeam(): Promise<PublicStaff[]> {
+  return (await listStaff()).map(({ id, slug, name, role, bio, photo_url, instagram, location_id, service_ids, bookable }) => ({
     id,
     slug,
     name,
@@ -36,8 +36,8 @@ export function publicTeam(): PublicStaff[] {
   }));
 }
 
-export function publicLocations(): PublicLocation[] {
-  return listLocations().map(({ id, name, address, city, whatsapp, maps_url, hours, active, coming_soon }) => ({
+export async function publicLocations(): Promise<PublicLocation[]> {
+  return (await listLocations()).map(({ id, name, address, city, whatsapp, maps_url, hours, active, coming_soon }) => ({
     id,
     name,
     address,
@@ -50,6 +50,7 @@ export function publicLocations(): PublicLocation[] {
   }));
 }
 
-export function contact() {
-  return { whatsapp: getSetting("salon_whatsapp"), instagram: getSetting("instagram_url") };
+export async function contact() {
+  const s = await getSettings();
+  return { whatsapp: s.salon_whatsapp, instagram: s.instagram_url };
 }

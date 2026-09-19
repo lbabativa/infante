@@ -1,11 +1,13 @@
 import { saveSettings } from "@/app/admin/actions";
 import { PageTitle } from "@/components/admin/ui";
-import { getSetting } from "@/lib/db";
+import { getSettings } from "@/lib/db";
 import { SITE_URL } from "@/lib/notify";
 
 export const metadata = { title: "Ajustes" };
 
-export default function AjustesPage() {
+export default async function AjustesPage() {
+  const settings = await getSettings();
+  const getSetting = (k: string) => settings[k];
   const integrations = [
     { name: "WhatsApp Business API", on: !!(process.env.WHATSAPP_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID), env: "WHATSAPP_TOKEN · WHATSAPP_PHONE_NUMBER_ID" },
     { name: "Correo (Resend)", on: !!process.env.RESEND_API_KEY, env: "RESEND_API_KEY" },

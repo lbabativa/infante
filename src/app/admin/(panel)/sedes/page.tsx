@@ -5,8 +5,8 @@ import { seedLocation } from "@/lib/seed-data";
 
 export const metadata = { title: "Sedes" };
 
-export default function SedesAdmin() {
-  const locations = listLocations({ includeInactive: true });
+export default async function SedesAdmin() {
+  const locations = await listLocations({ includeInactive: true });
   return (
     <>
       <PageTitle title="Sedes" sub="Cada sede tiene su propio horario y equipo. Las sedes “próximamente” se anuncian en el sitio sin recibir reservas." />

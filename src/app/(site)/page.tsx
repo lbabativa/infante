@@ -6,9 +6,8 @@ import { ServicesShowcase } from "@/components/site/ServicesShowcase";
 import { TeamGallery } from "@/components/site/TeamGallery";
 import { publicCatalog, publicLocations, publicTeam } from "@/lib/public-data";
 
-export default function Home() {
-  const categories = publicCatalog();
-  const team = publicTeam();
+export default async function Home() {
+  const [categories, team, locations] = await Promise.all([publicCatalog(), publicTeam(), publicLocations()]);
   const serviceCount = categories.reduce((a, c) => a + c.services.length, 0);
 
   return (
@@ -20,7 +19,7 @@ export default function Home() {
       <TeamGallery team={team} />
       <Brands />
       <Steps />
-      <Locations locations={publicLocations()} />
+      <Locations locations={locations} />
       <FinalCTA />
     </>
   );

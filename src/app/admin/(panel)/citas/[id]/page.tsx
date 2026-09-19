@@ -3,22 +3,21 @@ import { notFound } from "next/navigation";
 import { reschedule, saveBookingNotes } from "@/app/admin/actions";
 import { BookingActions } from "@/components/admin/BookingActions";
 import { PageTitle, StatusBadge } from "@/components/admin/ui";
-import { all } from "@/lib/db";
+import { col, NO_ID } from "@/lib/db";
 import { clock, duration, hhmm, longDate, money, prettyPhone } from "@/lib/format";
-import { waLink } from "@/lib/notify";
+import { waLink, type Message } from "@/lib/notify";
 import { getBooking, listStaff } from "@/lib/repo";
 
 export const metadata = { title: "Cita" };
 
 export default async function CitaPage({ params }: { params: Promise<{ id: string }> }) {
-  const b = getBooking(Number((await params).id));
+  const b = await getBooking(Number((await params).id));
   if (!b) notFound();
-  const staff = listStaff();
-  const messages = all<{ id: number; template: string; status: string; body: string; created_at: string; channel: string }>(
-    "SELECT * FROM messages WHERE booking_id = ? ORDER BY id DESC",
-    b.id
-  );
-  const history = all<{ n: number }>("SELECT COUNT(*) AS n FROM bookings WHERE client_id = ? AND status = 'completed'", b.client_id)[0]?.n ?? 0;
+  const [staff, messages, history] = await Promise.all([
+    listStaff(),
+    (await col<Message>("messages")).find({ booking_id: b.id }, NO_ID).sort({ id: -1 }).toArray(),
+    (await col("bookings")).countDocuments({ client_id: b.client_id, status: "completed" }),
+  ]);
 
   return (
     <>
@@ -96,7 +95,7 @@ export default async function CitaPage({ params }: { params: Promise<{ id: strin
                         {m.template.replace("tpl_", "").replace("_", " ")} · {m.channel}
                       </span>
                       <span>
-                        {m.status === "sent" ? "✓ enviado" : m.status === "manual" ? "pendiente de envío" : "falló"} · {m.created_at.slice(5, 16)}
+                        {m.status === "sent" ? "✓ enviado" : m.status === "manual" ? "pendiente de envío" : "falló"} · {m.created_at.slice(5, 16).replace("T", " ")}
                       </span>
                     </p>
                     <p className="whitespace-pre-line">{m.body}</p>

@@ -6,8 +6,8 @@ import { publicTeam } from "@/lib/public-data";
 
 export const metadata: Metadata = { title: "Nuestro equipo", description: "Conoce a los estilistas y especialistas de Infante Hair Stylist." };
 
-export default function EquipoPage() {
-  const team = publicTeam();
+export default async function EquipoPage() {
+  const team = await publicTeam();
   return (
     <div className="mx-auto max-w-[1400px] px-5 pb-32 pt-40 md:px-10">
       <div className="flex flex-col justify-between gap-8 md:flex-row md:items-end">

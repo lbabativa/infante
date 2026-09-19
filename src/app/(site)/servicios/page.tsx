@@ -9,8 +9,8 @@ export const metadata: Metadata = {
   description: "Color, balayage, cortes de autor, tratamientos Kérastase, Wella, Alfaparf y Truss, keratina, maquillaje, novias, manicure y más.",
 };
 
-export default function ServiciosPage() {
-  const categories = publicCatalog();
+export default async function ServiciosPage() {
+  const categories = await publicCatalog();
   return (
     <div className="mx-auto max-w-[1400px] px-5 pb-32 pt-40 md:px-10">
       <p className="eyebrow text-champagne">— Carta de servicios</p>

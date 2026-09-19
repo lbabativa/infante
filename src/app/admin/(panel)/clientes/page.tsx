@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { Empty, PageTitle } from "@/components/admin/ui";
-import { all } from "@/lib/db";
-import { money, prettyPhone, shortDate } from "@/lib/format";
+import { col, NO_ID } from "@/lib/db";
+import type { BookingDoc, Client } from "@/lib/repo";
+import { bogotaNow, money, prettyPhone, shortDate } from "@/lib/format";
 import { waLink } from "@/lib/notify";
 
 export const metadata = { title: "Clientes" };
@@ -10,19 +11,31 @@ type Row = { id: number; name: string; phone: string; email: string | null; visi
 
 export default async function ClientesPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
   const { q = "" } = await searchParams;
-  const rows = all<Row>(
-    `SELECT c.id, c.name, c.phone, c.email,
-       SUM(b.status = 'completed') AS visits,
-       SUM(CASE WHEN b.status = 'completed' THEN b.total_price END) AS spent,
-       MAX(CASE WHEN b.status = 'completed' THEN b.date END) AS last,
-       MIN(CASE WHEN b.status IN ('pending','confirmed') AND b.date >= date('now','-5 hours') THEN b.date END) AS next
-     FROM clients c LEFT JOIN bookings b ON b.client_id = c.id
-     WHERE c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ?
-     GROUP BY c.id ORDER BY COALESCE(last, c.created_at) DESC LIMIT 300`,
-    `%${q}%`,
-    `%${q}%`,
-    `%${q}%`
-  );
+  const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+  const clients = await (await col<Client>("clients"))
+    .find(q ? { $or: [{ name: re }, { phone: re }, { email: re }] } : {}, NO_ID)
+    .sort({ created_at: -1 })
+    .limit(300)
+    .toArray();
+  const bookings = await (await col<BookingDoc>("bookings"))
+    .find({ client_id: { $in: clients.map((c) => c.id) } }, { projection: { client_id: 1, status: 1, date: 1, total_price: 1 } })
+    .toArray();
+  const today = bogotaNow().date;
+  const rows: Row[] = clients
+    .map((c) => {
+      const mine = bookings.filter((b) => b.client_id === c.id);
+      const done = mine.filter((b) => b.status === "completed");
+      const upcoming = mine.filter((b) => ["pending", "confirmed"].includes(b.status) && b.date >= today).map((b) => b.date).sort();
+      return {
+        ...c,
+        visits: done.length,
+        spent: done.reduce((a, b) => a + (b.total_price ?? 0), 0) || null,
+        last: done.map((b) => b.date).sort().at(-1) ?? null,
+        next: upcoming[0] ?? null,
+        sortKey: done.map((b) => b.date).sort().at(-1) ?? c.created_at,
+      };
+    })
+    .sort((a, b) => b.sortKey.localeCompare(a.sortKey));
   return (
     <>
       <PageTitle title="Clientes" sub={`${rows.length} clientes`}>

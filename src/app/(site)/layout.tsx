@@ -5,8 +5,8 @@ import { contact } from "@/lib/public-data";
 
 export const dynamic = "force-dynamic";
 
-export default function SiteLayout({ children }: { children: React.ReactNode }) {
-  const c = contact();
+export default async function SiteLayout({ children }: { children: React.ReactNode }) {
+  const c = await contact();
   return (
     <div className="grain relative">
       <Nav />

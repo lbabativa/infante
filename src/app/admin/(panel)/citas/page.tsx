@@ -10,8 +10,8 @@ export default async function CitasPage({ searchParams }: { searchParams: Promis
   const now = bogotaNow();
   const from = sp.desde ?? (sp.estado || sp.q ? undefined : now.date);
   const to = sp.hasta ?? (sp.estado || sp.q ? undefined : addDays(now.date, 30));
-  const bookings = listBookings({ from, to, status: sp.estado, staffId: Number(sp.especialista) || undefined, q: sp.q, limit: 300 });
-  const staff = listStaff();
+  const bookings = await listBookings({ from, to, status: sp.estado, staffId: Number(sp.especialista) || undefined, q: sp.q, limit: 300 });
+  const staff = await listStaff();
 
   return (
     <>

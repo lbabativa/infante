@@ -4,9 +4,8 @@ import { listCategories, listServices, type Category, type Service } from "@/lib
 
 export const metadata = { title: "Servicios" };
 
-export default function ServiciosAdmin() {
-  const cats = listCategories();
-  const services = listServices({ includeInactive: true });
+export default async function ServiciosAdmin() {
+  const [cats, services] = await Promise.all([listCategories(), listServices({ includeInactive: true })]);
   return (
     <>
       <PageTitle title="Servicios" sub={`${services.filter((s) => s.active).length} activos · los cambios se ven al instante en el sitio`} />

@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { PageTitle, STATUS_BLOCK } from "@/components/admin/ui";
-import { all } from "@/lib/db";
 import { addDays, bogotaNow, clock, hhmm, longDate, weekday } from "@/lib/format";
-import { listBookings, listLocations, listStaff } from "@/lib/repo";
+import { listBookings, listLocations, listStaff, listTimeOff } from "@/lib/repo";
 
 export const metadata = { title: "Agenda" };
 
@@ -13,18 +12,18 @@ export default async function AgendaPage({ searchParams }: { searchParams: Promi
   const sp = await searchParams;
   const now = bogotaNow();
   const date = sp.fecha && /^\d{4}-\d{2}-\d{2}$/.test(sp.fecha) ? sp.fecha : now.date;
-  const locations = listLocations().filter((l) => l.active);
+  const locations = (await listLocations()).filter((l) => l.active);
   const location = locations.find((l) => l.id === Number(sp.sede)) ?? locations[0];
   const wd = weekday(date);
   const hours = location?.hours[wd];
   const [open, close] = hours ?? [480, 1140];
-  const staff = listStaff().filter((s) => s.bookable && (s.location_id == null || s.location_id === location?.id));
-  const bookings = listBookings({ from: date, to: date, locationId: location?.id }).filter((b) => b.status !== "cancelled" || sp.canceladas);
-  const off = all<{ id: number; staff_id: number | null; start_min: number; end_min: number; reason: string | null }>(
-    "SELECT * FROM time_off WHERE date = ? AND (location_id IS NULL OR location_id = ?)",
-    date,
-    location?.id ?? 0
-  );
+  const [allStaff, allBookings, off] = await Promise.all([
+    listStaff(),
+    listBookings({ from: date, to: date, locationId: location?.id }),
+    listTimeOff({ date, location_id: { $in: [null, location?.id ?? 0] } }),
+  ]);
+  const staff = allStaff.filter((s) => s.bookable && (s.location_id == null || s.location_id === location?.id));
+  const bookings = allBookings.filter((b) => b.status !== "cancelled" || sp.canceladas);
   const rows = Array.from({ length: Math.ceil((close - open) / ROW) }, (_, i) => open + i * ROW);
   const top = (m: number) => ((m - open) / ROW) * PX;
   const q = (d: string) => `/admin/agenda?fecha=${d}${location ? `&sede=${location.id}` : ""}`;

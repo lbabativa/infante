@@ -3,9 +3,8 @@ import { notFound } from "next/navigation";
 import { addTimeOff, deleteTimeOff, saveStaff } from "@/app/admin/actions";
 import { HoursEditor, PageTitle } from "@/components/admin/ui";
 import { Portrait } from "@/components/site/Portrait";
-import { all } from "@/lib/db";
 import { bogotaNow, hhmm, shortDate } from "@/lib/format";
-import { catalog, getStaff, listLocations, type Staff } from "@/lib/repo";
+import { catalog, getStaff, listLocations, listTimeOff, type Staff } from "@/lib/repo";
 import { seedLocation } from "@/lib/seed-data";
 
 export const metadata = { title: "Especialista" };
@@ -16,16 +15,12 @@ export default async function StaffEdit({ params, searchParams }: { params: Prom
   const isNew = id === "nuevo";
   const s: Staff | undefined = isNew
     ? undefined
-    : getStaff(Number(id)) ?? notFound();
-  const locations = listLocations({ includeInactive: true });
-  const cats = catalog();
-  const offs = s
-    ? all<{ id: number; date: string; start_min: number; end_min: number; reason: string | null }>(
-        "SELECT * FROM time_off WHERE staff_id = ? AND date >= ? ORDER BY date",
-        s.id,
-        bogotaNow().date
-      )
-    : [];
+    : (await getStaff(Number(id))) ?? notFound();
+  const [locations, cats, offs] = await Promise.all([
+    listLocations({ includeInactive: true }),
+    catalog(),
+    s ? listTimeOff({ staff_id: s.id, date: { $gte: bogotaNow().date } }) : [],
+  ]);
   const allServices = !s || s.service_ids.length === 0;
 
   return (

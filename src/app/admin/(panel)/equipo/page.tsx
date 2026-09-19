@@ -5,8 +5,8 @@ import { listStaff } from "@/lib/repo";
 
 export const metadata = { title: "Equipo" };
 
-export default function EquipoAdmin() {
-  const staff = listStaff({ includeInactive: true });
+export default async function EquipoAdmin() {
+  const staff = await listStaff({ includeInactive: true });
   return (
     <>
       <PageTitle title="Equipo" sub="Fotos, biografías, horarios y servicios de cada especialista">

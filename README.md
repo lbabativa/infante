@@ -12,7 +12,7 @@ Los datos iniciales (≈50 servicios con precios y duraciones, 14 especialistas,
 
 ## Stack
 
-Next.js 16 (App Router) · React 19 · Tailwind CSS 4 · Motion · SQLite nativo de Node (`node:sqlite`, sin dependencias externas) · Zod.
+Next.js 16 (App Router) · React 19 · Tailwind CSS 4 · Motion · MongoDB Atlas · Zod.
 
 ## Desarrollo
 
@@ -24,9 +24,10 @@ npm run dev
 
 - Sitio: http://localhost:3000
 - Panel: http://localhost:3000/admin — en desarrollo, sin `ADMIN_PASSWORD`, la clave es `infante2026`.
-- La base de datos se crea sola con los datos semilla en `data/infante.db`. `npm run db:reset` la reinicia.
+- Define `MONGODB_URI` en `.env.local`. La primera conexión crea índices y siembra servicios, equipo y sedes (solo si la base está vacía).
+- Si Node no resuelve el host `mongodb+srv` en tu red local, agrega `MONGODB_DNS_SERVERS=8.8.8.8,1.1.1.1`.
 
-Requiere Node ≥ 22.13 (probado en Node 24).
+Requiere Node 24.
 
 ## Automatización de mensajes
 
@@ -60,13 +61,13 @@ Autenticación: `Authorization: Bearer <INTEGRATION_API_KEY>`.
 
 Con `NOVACALL_WEBHOOK_URL` cada cambio se notifica por POST: `booking.created`, `booking.confirmed`, `booking.cancelled`, `booking.completed`, `booking.no_show`, `booking.rescheduled`.
 
-## Despliegue
+## Despliegue (Vercel)
 
-La base de datos es un archivo SQLite, así que el servidor necesita **disco persistente**: un VPS, Railway, Render o Fly.io con volumen montado en `data/` (`DATABASE_PATH` permite cambiar la ruta). Las fotos subidas se guardan en `data/uploads`.
+1. En MongoDB Atlas → **Network Access**, permite `0.0.0.0/0` (Vercel no tiene IP fija).
+2. En Vercel → Settings → Environment Variables: `MONGODB_URI`, `MONGODB_DB`, `ADMIN_PASSWORD`, `SESSION_SECRET`, `NEXT_PUBLIC_SITE_URL`, `CRON_SECRET`.
+3. Programa `/api/cron/recordatorios` cada 15 min (Vercel Cron o cualquier scheduler).
 
-Para desplegar en Vercel (sistema de archivos efímero) primero hay que migrar la capa de datos (`src/lib/db.ts`) a Postgres o Turso; el resto del código no cambia.
-
-Variables de producción obligatorias: `ADMIN_PASSWORD`, `SESSION_SECRET`, `NEXT_PUBLIC_SITE_URL`, `CRON_SECRET`. Ver `.env.example`.
+Todo se guarda en MongoDB, incluidas las fotos del equipo (colección `media`), así que funciona en entornos sin disco persistente. Las reservas simultáneas se serializan con una transacción + candado por sede y día, de modo que no hay dobles reservas.
 
 ## Estructura
 

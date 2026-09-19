@@ -1,6 +1,6 @@
 "use server";
 import { z } from "zod";
-import { run } from "@/lib/db";
+import { col, nextId, nowIso } from "@/lib/db";
 import { normalizePhone } from "@/lib/format";
 
 const schema = z.object({
@@ -19,15 +19,13 @@ export async function apply(_prev: ApplyState, fd: FormData): Promise<ApplyState
   const parsed = schema.safeParse(Object.fromEntries(fd));
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
   const d = parsed.data;
-  run(
-    "INSERT INTO applications (name, phone, email, role, experience, instagram, message) VALUES (?,?,?,?,?,?,?)",
-    d.name,
-    normalizePhone(d.phone),
-    d.email || null,
-    d.role,
-    d.experience,
-    d.instagram,
-    d.message
-  );
+  await (await col("applications")).insertOne({
+    id: await nextId("applications"),
+    ...d,
+    phone: normalizePhone(d.phone),
+    email: d.email || null,
+    status: "nueva",
+    created_at: nowIso(),
+  });
   return { ok: true };
 }

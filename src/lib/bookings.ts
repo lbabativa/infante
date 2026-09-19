@@ -1,11 +1,11 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
-import { get, getSetting, run, tx } from "./db";
+import { col, getSetting, nextId, nowIso, withLock } from "./db";
 import { getSlots, pickStaff } from "./availability";
 import { normalizePhone } from "./format";
 import { emitEvent, notifyClient, notifySalon } from "./notify";
-import { getBooking, listServices, type BookingStatus } from "./repo";
+import { getBooking, listServices, type BookingDoc, type BookingStatus, type Client } from "./repo";
 
 export const bookingInput = z.object({
   locationId: z.coerce.number().int().positive(),
@@ -29,80 +29,83 @@ export class BookingError extends Error {}
 
 function newCode() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const bytes = randomBytes(6);
-  return "INF-" + Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+  return "INF-" + Array.from(randomBytes(6), (b) => alphabet[b % alphabet.length]).join("");
 }
 
-export function upsertClient(name: string, rawPhone: string, email?: string) {
+export async function upsertClient(name: string, rawPhone: string, email?: string) {
   const phone = normalizePhone(rawPhone);
-  const existing = get<{ id: number }>("SELECT id FROM clients WHERE phone = ?", phone);
+  const clients = await col<Client>("clients");
+  const existing = await clients.findOne({ phone });
   if (existing) {
-    run("UPDATE clients SET name = ?, email = COALESCE(NULLIF(?, ''), email) WHERE id = ?", name, email ?? "", existing.id);
+    await clients.updateOne({ id: existing.id }, { $set: { name, ...(email ? { email } : {}) } });
     return existing.id;
   }
-  return Number(run("INSERT INTO clients (name, phone, email) VALUES (?,?,?)", name, phone, email || null).lastInsertRowid);
+  const id = await nextId("clients");
+  try {
+    await clients.insertOne({ id, name, phone, email: email || null, notes: null, created_at: nowIso() });
+    return id;
+  } catch {
+    // Otra petición creó el mismo celular en paralelo.
+    return (await clients.findOne({ phone }))!.id;
+  }
 }
 
 export async function createBooking(input: BookingInput, opts: { force?: boolean } = {}) {
-  const services = listServices({ includeInactive: true }).filter((s) => input.serviceIds.includes(s.id));
+  const services = (await listServices({ includeInactive: true })).filter((s) => input.serviceIds.includes(s.id));
   if (services.length !== new Set(input.serviceIds).size) throw new BookingError("Servicio no disponible");
   const duration = services.reduce((a, s) => a + s.duration_min, 0);
   const total = services.every((s) => s.price != null) ? services.reduce((a, s) => a + (s.price ?? 0), 0) : null;
+  const status: BookingStatus = input.source === "admin" || (await getSetting("auto_confirm")) === "1" ? "confirmed" : "pending";
+  const clientId = await upsertClient(input.name, input.phone, input.email);
 
-  const status: BookingStatus =
-    input.source === "admin" || getSetting("auto_confirm") === "1" ? "confirmed" : "pending";
-
-  const id = tx(() => {
-    // Verificación dentro de la transacción: evita dobles reservas.
-    const slot = getSlots({
-      locationId: input.locationId,
-      date: input.date,
-      serviceIds: input.serviceIds,
-      staffId: input.staffId,
-      ignoreLeadTime: opts.force,
-    }).find((s) => s.start === input.start);
+  // Candado por sede y día: las reservas simultáneas del mismo día se serializan.
+  const id = await withLock(`book:${input.locationId}:${input.date}`, async (session) => {
+    const slot = (
+      await getSlots(
+        { locationId: input.locationId, date: input.date, serviceIds: input.serviceIds, staffId: input.staffId, ignoreLeadTime: opts.force },
+        session
+      )
+    ).find((s) => s.start === input.start);
 
     let staffId = input.staffId ?? null;
     if (!slot) {
       if (!(opts.force && staffId)) throw new BookingError("Ese horario acaba de ocuparse. Elige otro, por favor.");
     } else {
-      staffId = staffId ?? pickStaff(input.date, slot.staffIds);
+      staffId = staffId ?? (await pickStaff(input.date, slot.staffIds, session));
     }
 
-    const clientId = upsertClient(input.name, input.phone, input.email);
-    const bookingId = Number(
-      run(
-        `INSERT INTO bookings (code, location_id, staff_id, client_id, date, start_min, end_min, status, total_price, notes, source)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-        newCode(),
-        input.locationId,
-        staffId,
-        clientId,
-        input.date,
-        input.start,
-        input.start + duration,
+    const bookingId = await nextId("bookings");
+    const now = nowIso();
+    await (await col<BookingDoc>("bookings")).insertOne(
+      {
+        id: bookingId,
+        code: newCode(),
+        location_id: input.locationId,
+        staff_id: staffId!,
+        client_id: clientId,
+        date: input.date,
+        start_min: input.start,
+        end_min: input.start + duration,
         status,
-        total,
-        input.notes || null,
-        input.source
-      ).lastInsertRowid
+        total_price: total,
+        notes: input.notes || null,
+        source: input.source,
+        services: services.map((s) => ({ service_id: s.id, name: s.name, price: s.price, duration_min: s.duration_min })),
+        reminder_24_at: null,
+        reminder_3_at: null,
+        followup_at: null,
+        created_at: now,
+        updated_at: now,
+      },
+      { session }
     );
-    for (const s of services)
-      run(
-        "INSERT INTO booking_services (booking_id, service_id, name, price, duration_min) VALUES (?,?,?,?,?)",
-        bookingId,
-        s.id,
-        s.name,
-        s.price,
-        s.duration_min
-      );
     return bookingId;
   });
 
   await notifyClient(id, status === "confirmed" ? "tpl_confirmed" : "tpl_pending");
   if (input.source !== "admin") await notifySalon(id);
   await emitEvent("booking.created", id);
-  return getBooking(id)!;
+  return (await getBooking(id))!;
 }
 
 const STATUS_TEMPLATE: Partial<Record<BookingStatus, "tpl_confirmed" | "tpl_cancelled">> = {
@@ -111,9 +114,9 @@ const STATUS_TEMPLATE: Partial<Record<BookingStatus, "tpl_confirmed" | "tpl_canc
 };
 
 export async function setBookingStatus(id: number, status: BookingStatus, opts: { notify?: boolean } = {}) {
-  const before = getBooking(id);
+  const before = await getBooking(id);
   if (!before || before.status === status) return before;
-  run("UPDATE bookings SET status = ?, updated_at = datetime('now') WHERE id = ?", status, id);
+  await (await col<BookingDoc>("bookings")).updateOne({ id }, { $set: { status, updated_at: nowIso() } });
   const tpl = STATUS_TEMPLATE[status];
   if (tpl && opts.notify !== false) await notifyClient(id, tpl);
   await emitEvent(`booking.${status}`, id);
@@ -121,17 +124,21 @@ export async function setBookingStatus(id: number, status: BookingStatus, opts: 
 }
 
 export async function rescheduleBooking(id: number, date: string, start: number, staffId: number) {
-  const b = getBooking(id);
+  const b = await getBooking(id);
   if (!b) throw new BookingError("Cita no encontrada");
-  const duration = b.end_min - b.start_min;
-  run(
-    `UPDATE bookings SET date = ?, start_min = ?, end_min = ?, staff_id = ?, reminder_24_at = NULL, reminder_3_at = NULL,
-     updated_at = datetime('now') WHERE id = ?`,
-    date,
-    start,
-    start + duration,
-    staffId,
-    id
+  await (await col<BookingDoc>("bookings")).updateOne(
+    { id },
+    {
+      $set: {
+        date,
+        start_min: start,
+        end_min: start + (b.end_min - b.start_min),
+        staff_id: staffId,
+        reminder_24_at: null,
+        reminder_3_at: null,
+        updated_at: nowIso(),
+      },
+    }
   );
   await notifyClient(id, "tpl_confirmed");
   await emitEvent("booking.rescheduled", id);

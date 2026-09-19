@@ -1,6 +1,6 @@
 import { setApplicationStatus } from "@/app/admin/actions";
 import { Empty, PageTitle } from "@/components/admin/ui";
-import { all } from "@/lib/db";
+import { col, NO_ID } from "@/lib/db";
 import { prettyPhone } from "@/lib/format";
 import { waLink } from "@/lib/notify";
 
@@ -9,8 +9,8 @@ export const metadata = { title: "Postulaciones" };
 type App = { id: number; name: string; phone: string; email: string | null; role: string; experience: string; instagram: string; message: string; status: string; created_at: string };
 const STATES = ["nueva", "contactada", "entrevista", "contratada", "descartada"];
 
-export default function PostulacionesPage() {
-  const apps = all<App>("SELECT * FROM applications ORDER BY id DESC");
+export default async function PostulacionesPage() {
+  const apps = await (await col<App>("applications")).find({}, NO_ID).sort({ id: -1 }).toArray();
   return (
     <>
       <PageTitle title="Postulaciones" sub="Recibidas desde “Únete a nuestro equipo”" />

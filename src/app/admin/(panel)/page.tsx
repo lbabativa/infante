@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { BookingActions } from "@/components/admin/BookingActions";
 import { Empty, PageTitle, StatusBadge } from "@/components/admin/ui";
-import { all, get } from "@/lib/db";
+import { col } from "@/lib/db";
 import { addDays, bogotaNow, clock, cop, longDate, shortDate, prettyPhone } from "@/lib/format";
 import { pendingManualCount, runAutomations } from "@/lib/notify";
-import { listBookings } from "@/lib/repo";
+import { listBookings, type BookingDoc } from "@/lib/repo";
 
 export const metadata = { title: "Hoy" };
 
@@ -12,21 +12,21 @@ export default async function Dashboard() {
   // Sin cron configurado, las automatizaciones corren también al abrir el panel.
   await runAutomations();
   const now = bogotaNow();
-  const today = listBookings({ from: now.date, to: now.date });
-  const active = today.filter((b) => b.status !== "cancelled");
-  const pending = listBookings({ status: "pending", from: now.date, limit: 20 });
-  const revenue = active.filter((b) => b.status !== "no_show").reduce((a, b) => a + (b.total_price ?? 0), 0);
-  const manual = pendingManualCount();
-  const next = active.find((b) => b.start_min >= now.minutes && b.status === "confirmed");
-
   const week = Array.from({ length: 7 }, (_, i) => addDays(now.date, i));
-  const perDay = all<{ date: string; n: number }>(
-    `SELECT date, COUNT(*) AS n FROM bookings WHERE date BETWEEN ? AND ? AND status IN ('pending','confirmed') GROUP BY date`,
-    week[0],
-    week[6]
-  );
+  const [today, pending, manual, weekDocs, newClients] = await Promise.all([
+    listBookings({ from: now.date, to: now.date }),
+    listBookings({ status: "pending", from: now.date, limit: 20 }),
+    pendingManualCount(),
+    (await col<BookingDoc>("bookings"))
+      .find({ date: { $gte: week[0], $lte: week[6] }, status: { $in: ["pending", "confirmed"] } }, { projection: { date: 1 } })
+      .toArray(),
+    (await col("clients")).countDocuments({ created_at: { $gte: new Date(Date.now() - 30 * 86400_000).toISOString() } }),
+  ]);
+  const active = today.filter((b) => b.status !== "cancelled");
+  const revenue = active.filter((b) => b.status !== "no_show").reduce((a, b) => a + (b.total_price ?? 0), 0);
+  const next = active.find((b) => b.start_min >= now.minutes && b.status === "confirmed");
+  const perDay = week.map((date) => ({ date, n: weekDocs.filter((d) => d.date === date).length }));
   const max = Math.max(1, ...perDay.map((d) => d.n));
-  const newClients = get<{ n: number }>("SELECT COUNT(*) AS n FROM clients WHERE date(created_at) >= date('now','-30 day')")?.n ?? 0;
 
   return (
     <>

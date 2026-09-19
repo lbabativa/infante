@@ -3,10 +3,10 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { checkPassword, endSession, requireAdmin, startSession } from "@/lib/auth";
 import { BookingError, bookingInput, createBooking, rescheduleBooking, setBookingStatus, upsertClient } from "@/lib/bookings";
-import { run, setSetting, tx, DEFAULT_SETTINGS } from "@/lib/db";
+import { col, DEFAULT_SETTINGS, nextId, nowIso, setSetting } from "@/lib/db";
 import { normalizePhone, parseHHMM, slugify } from "@/lib/format";
-import { runAutomations } from "@/lib/notify";
-import type { BookingStatus } from "@/lib/repo";
+import { runAutomations, type Message } from "@/lib/notify";
+import type { BookingDoc, BookingStatus, Hours } from "@/lib/repo";
 import { saveUpload } from "@/lib/uploads";
 
 const str = (fd: FormData, k: string) => String(fd.get(k) ?? "").trim();
@@ -14,12 +14,12 @@ const num = (fd: FormData, k: string) => Number(fd.get(k) ?? 0);
 const bool = (fd: FormData, k: string) => (fd.get(k) ? 1 : 0);
 
 /** Lee un horario semanal del formulario: d{0..6}_on, d{n}_start, d{n}_end */
-function readHours(fd: FormData) {
-  const hours: Record<number, [number, number] | null> = {};
+function readHours(fd: FormData): Hours {
+  const hours: Hours = {};
   for (let d = 0; d <= 6; d++) {
     hours[d] = fd.get(`d${d}_on`) ? [parseHHMM(str(fd, `d${d}_start`) || "08:00"), parseHHMM(str(fd, `d${d}_end`) || "19:00")] : null;
   }
-  return JSON.stringify(hours);
+  return hours;
 }
 
 // ── Sesión ────────────────────────────────────────────────────
@@ -60,8 +60,7 @@ export async function createAdminBooking(_prev: { error?: string }, fd: FormData
   try {
     id = (await createBooking(parsed.data, { force: !!fd.get("force") })).id;
   } catch (e) {
-    if (e instanceof BookingError)
-      return { error: e.message + " Marca “Forzar” para agendar de todos modos (requiere elegir especialista)." };
+    if (e instanceof BookingError) return { error: e.message + " Marca “Forzar” para agendar de todos modos (requiere elegir especialista)." };
     throw e;
   }
   revalidatePath("/admin", "layout");
@@ -76,7 +75,7 @@ export async function reschedule(fd: FormData) {
 
 export async function saveBookingNotes(fd: FormData) {
   await requireAdmin();
-  run("UPDATE bookings SET notes = ?, updated_at = datetime('now') WHERE id = ?", str(fd, "notes") || null, num(fd, "id"));
+  await (await col<BookingDoc>("bookings")).updateOne({ id: num(fd, "id") }, { $set: { notes: str(fd, "notes") || null, updated_at: nowIso() } });
   revalidatePath(`/admin/citas/${num(fd, "id")}`);
 }
 
@@ -85,15 +84,11 @@ export async function saveClient(fd: FormData) {
   await requireAdmin();
   const id = num(fd, "id");
   if (id) {
-    run(
-      "UPDATE clients SET name = ?, phone = ?, email = ?, notes = ? WHERE id = ?",
-      str(fd, "name"),
-      normalizePhone(str(fd, "phone")),
-      str(fd, "email") || null,
-      str(fd, "notes") || null,
-      id
+    await (await col("clients")).updateOne(
+      { id },
+      { $set: { name: str(fd, "name"), phone: normalizePhone(str(fd, "phone")), email: str(fd, "email") || null, notes: str(fd, "notes") || null } }
     );
-  } else upsertClient(str(fd, "name"), str(fd, "phone"), str(fd, "email"));
+  } else await upsertClient(str(fd, "name"), str(fd, "phone"), str(fd, "email"));
   revalidatePath("/admin/clientes", "layout");
 }
 
@@ -101,33 +96,36 @@ export async function saveClient(fd: FormData) {
 export async function saveService(fd: FormData) {
   await requireAdmin();
   const id = num(fd, "id");
-  const price = str(fd, "price") === "" ? null : Number(str(fd, "price").replace(/\D/g, ""));
-  const values = [
-    num(fd, "category_id"),
-    str(fd, "name"),
-    str(fd, "description") || null,
-    num(fd, "duration_min") || 60,
-    price,
-    bool(fd, "price_from"),
-    bool(fd, "featured"),
-    bool(fd, "active"),
-    num(fd, "sort"),
-  ];
-  if (id)
-    run(
-      "UPDATE services SET category_id=?, name=?, description=?, duration_min=?, price=?, price_from=?, featured=?, active=?, sort=? WHERE id=?",
-      ...values,
-      id
-    );
-  else run("INSERT INTO services (category_id,name,description,duration_min,price,price_from,featured,active,sort) VALUES (?,?,?,?,?,?,?,?,?)", ...values);
+  const doc = {
+    category_id: num(fd, "category_id"),
+    name: str(fd, "name"),
+    description: str(fd, "description") || null,
+    duration_min: num(fd, "duration_min") || 60,
+    price: str(fd, "price") === "" ? null : Number(str(fd, "price").replace(/\D/g, "")),
+    price_from: bool(fd, "price_from"),
+    featured: bool(fd, "featured"),
+    active: bool(fd, "active"),
+    sort: num(fd, "sort"),
+  };
+  const services = await col("services");
+  if (id) await services.updateOne({ id }, { $set: doc });
+  else await services.insertOne({ id: await nextId("services"), ...doc });
   revalidatePath("/", "layout");
 }
 
 export async function saveCategory(fd: FormData) {
   await requireAdmin();
   const id = num(fd, "id");
-  if (id) run("UPDATE categories SET name=?, tagline=?, sort=? WHERE id=?", str(fd, "name"), str(fd, "tagline"), num(fd, "sort"), id);
-  else run("INSERT INTO categories (slug,name,tagline,sort) VALUES (?,?,?,?)", slugify(str(fd, "name")), str(fd, "name"), str(fd, "tagline"), num(fd, "sort") || 99);
+  const categories = await col("categories");
+  if (id) await categories.updateOne({ id }, { $set: { name: str(fd, "name"), tagline: str(fd, "tagline"), sort: num(fd, "sort") } });
+  else
+    await categories.insertOne({
+      id: await nextId("categories"),
+      slug: slugify(str(fd, "name")),
+      name: str(fd, "name"),
+      tagline: str(fd, "tagline"),
+      sort: num(fd, "sort") || 99,
+    });
   revalidatePath("/", "layout");
 }
 
@@ -136,35 +134,27 @@ export async function saveStaff(fd: FormData) {
   await requireAdmin();
   let id = num(fd, "id");
   const uploaded = await saveUpload(fd.get("photo") as File | null);
-  const photo = uploaded ?? (str(fd, "photo_url") || null);
-  const values = [
-    str(fd, "name"),
-    str(fd, "role") || null,
-    str(fd, "bio") || null,
-    photo,
-    str(fd, "instagram") || null,
-    str(fd, "phone") ? normalizePhone(str(fd, "phone")) : null,
-    num(fd, "location_id") || null,
-    readHours(fd),
-    bool(fd, "active"),
-    bool(fd, "bookable"),
-    num(fd, "sort"),
-  ];
-  const serviceIds = fd.getAll("service_ids").map(Number);
-  tx(() => {
-    if (id) run("UPDATE staff SET name=?, role=?, bio=?, photo_url=?, instagram=?, phone=?, location_id=?, schedule=?, active=?, bookable=?, sort=? WHERE id=?", ...values, id);
-    else
-      id = Number(
-        run(
-          "INSERT INTO staff (slug,name,role,bio,photo_url,instagram,phone,location_id,schedule,active,bookable,sort) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-          `${slugify(str(fd, "name"))}-${Date.now().toString(36)}`,
-          ...values
-        ).lastInsertRowid
-      );
-    run("DELETE FROM staff_services WHERE staff_id = ?", id);
-    // Si están marcados todos, se guarda vacío = "todos" (incluye servicios futuros).
-    if (!fd.get("all_services")) for (const s of serviceIds) run("INSERT INTO staff_services (staff_id, service_id) VALUES (?,?)", id, s);
-  });
+  const doc = {
+    name: str(fd, "name"),
+    role: str(fd, "role") || null,
+    bio: str(fd, "bio") || null,
+    photo_url: uploaded ?? (str(fd, "photo_url") || null),
+    instagram: str(fd, "instagram") || null,
+    phone: str(fd, "phone") ? normalizePhone(str(fd, "phone")) : null,
+    location_id: num(fd, "location_id") || null,
+    schedule: readHours(fd),
+    active: bool(fd, "active"),
+    bookable: bool(fd, "bookable"),
+    sort: num(fd, "sort"),
+    // Vacío = "todos los servicios" (incluye los que se agreguen en el futuro).
+    service_ids: fd.get("all_services") ? [] : fd.getAll("service_ids").map(Number),
+  };
+  const staff = await col("staff");
+  if (id) await staff.updateOne({ id }, { $set: doc });
+  else {
+    id = await nextId("staff");
+    await staff.insertOne({ id, slug: `${slugify(doc.name)}-${id}`, ...doc });
+  }
   revalidatePath("/", "layout");
   redirect(`/admin/equipo/${id}?ok=1`);
 }
@@ -172,21 +162,21 @@ export async function saveStaff(fd: FormData) {
 export async function addTimeOff(fd: FormData) {
   await requireAdmin();
   const allDay = !!fd.get("all_day");
-  run(
-    "INSERT INTO time_off (staff_id, location_id, date, start_min, end_min, reason) VALUES (?,?,?,?,?,?)",
-    num(fd, "staff_id") || null,
-    num(fd, "location_id") || null,
-    str(fd, "date"),
-    allDay ? 0 : parseHHMM(str(fd, "start")),
-    allDay ? 1440 : parseHHMM(str(fd, "end")),
-    str(fd, "reason") || null
-  );
+  await (await col("time_off")).insertOne({
+    id: await nextId("time_off"),
+    staff_id: num(fd, "staff_id") || null,
+    location_id: num(fd, "location_id") || null,
+    date: str(fd, "date"),
+    start_min: allDay ? 0 : parseHHMM(str(fd, "start")),
+    end_min: allDay ? 1440 : parseHHMM(str(fd, "end")),
+    reason: str(fd, "reason") || null,
+  });
   revalidatePath("/admin", "layout");
 }
 
 export async function deleteTimeOff(fd: FormData) {
   await requireAdmin();
-  run("DELETE FROM time_off WHERE id = ?", num(fd, "id"));
+  await (await col("time_off")).deleteOne({ id: num(fd, "id") });
   revalidatePath("/admin", "layout");
 }
 
@@ -194,25 +184,24 @@ export async function deleteTimeOff(fd: FormData) {
 export async function saveLocation(fd: FormData) {
   await requireAdmin();
   const id = num(fd, "id");
-  const values = [
-    str(fd, "name"),
-    str(fd, "address"),
-    str(fd, "city") || "Bogotá D.C.",
-    str(fd, "phone") || null,
-    str(fd, "whatsapp") ? normalizePhone(str(fd, "whatsapp")) : null,
-    str(fd, "maps_url") || null,
-    readHours(fd),
-    bool(fd, "active"),
-    bool(fd, "coming_soon"),
-    num(fd, "sort"),
-  ];
-  if (id) run("UPDATE locations SET name=?, address=?, city=?, phone=?, whatsapp=?, maps_url=?, hours=?, active=?, coming_soon=?, sort=? WHERE id=?", ...values, id);
-  else
-    run(
-      "INSERT INTO locations (slug,name,address,city,phone,whatsapp,maps_url,hours,active,coming_soon,sort) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-      `${slugify(str(fd, "name"))}-${Date.now().toString(36)}`,
-      ...values
-    );
+  const doc = {
+    name: str(fd, "name"),
+    address: str(fd, "address"),
+    city: str(fd, "city") || "Bogotá D.C.",
+    phone: str(fd, "phone") || null,
+    whatsapp: str(fd, "whatsapp") ? normalizePhone(str(fd, "whatsapp")) : null,
+    maps_url: str(fd, "maps_url") || null,
+    hours: readHours(fd),
+    active: bool(fd, "active"),
+    coming_soon: bool(fd, "coming_soon"),
+    sort: num(fd, "sort"),
+  };
+  const locations = await col("locations");
+  if (id) await locations.updateOne({ id }, { $set: doc });
+  else {
+    const newId = await nextId("locations");
+    await locations.insertOne({ id: newId, slug: `${slugify(doc.name)}-${newId}`, ...doc });
+  }
   revalidatePath("/", "layout");
 }
 
@@ -222,15 +211,17 @@ export async function saveSettings(fd: FormData) {
   const checkboxes = ["auto_confirm", "reminder_24h", "reminder_3h", "followup"];
   for (const key of Object.keys(DEFAULT_SETTINGS)) {
     if (checkboxes.includes(key)) {
-      if (fd.has("_checkboxes")) setSetting(key, fd.get(key) ? "1" : "0");
-    } else if (fd.has(key)) setSetting(key, key === "salon_whatsapp" ? normalizePhone(str(fd, key)) : str(fd, key));
+      if (fd.has("_checkboxes")) await setSetting(key, fd.get(key) ? "1" : "0");
+    } else if (fd.has(key)) await setSetting(key, key === "salon_whatsapp" ? normalizePhone(str(fd, key)) : str(fd, key));
   }
   revalidatePath("/", "layout");
 }
 
 export async function markMessageSent(fd: FormData) {
   await requireAdmin();
-  run("UPDATE messages SET status = 'sent', sent_at = datetime('now'), provider = COALESCE(provider,'') || ' (manual)' WHERE id = ?", num(fd, "id"));
+  const messages = await col<Message>("messages");
+  const m = await messages.findOne({ id: num(fd, "id") });
+  if (m) await messages.updateOne({ id: m.id }, { $set: { status: "sent", sent_at: nowIso(), provider: `${m.provider ?? ""} (manual)` } });
   revalidatePath("/admin/mensajes");
 }
 
@@ -243,6 +234,6 @@ export async function runAutomationsNow() {
 // ── Postulaciones ─────────────────────────────────────────────
 export async function setApplicationStatus(fd: FormData) {
   await requireAdmin();
-  run("UPDATE applications SET status = ? WHERE id = ?", str(fd, "status"), num(fd, "id"));
+  await (await col("applications")).updateOne({ id: num(fd, "id") }, { $set: { status: str(fd, "status") } });
   revalidatePath("/admin/postulaciones");
 }

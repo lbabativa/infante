@@ -1,5 +1,6 @@
 import "server-only";
-import { all, get } from "./db";
+import type { Filter } from "mongodb";
+import { col, NO_ID } from "./db";
 
 export type Hours = Record<number, [number, number] | null>;
 
@@ -50,9 +51,16 @@ export type Staff = {
   service_ids: number[]; // vacío = realiza todos los servicios
 };
 
+export type Client = { id: number; name: string; phone: string; email: string | null; notes: string | null; created_at: string };
+
+export type TimeOff = { id: number; staff_id: number | null; location_id: number | null; date: string; start_min: number; end_min: number; reason: string | null };
+
 export type BookingStatus = "pending" | "confirmed" | "completed" | "cancelled" | "no_show";
 
-export type Booking = {
+export type BookingService = { service_id: number | null; name: string; price: number | null; duration_min: number };
+
+/** Documento tal como se guarda en la colección `bookings`. */
+export type BookingDoc = {
   id: number;
   code: string;
   location_id: number;
@@ -65,96 +73,106 @@ export type Booking = {
   total_price: number | null;
   notes: string | null;
   source: string;
+  services: BookingService[];
+  reminder_24_at: string | null;
+  reminder_3_at: string | null;
+  followup_at: string | null;
   created_at: string;
+  updated_at: string;
+};
+
+/** Cita con los datos del cliente, especialista y sede resueltos. */
+export type Booking = BookingDoc & {
   client_name: string;
   client_phone: string;
   client_email: string | null;
   staff_name: string;
   location_name: string;
   location_address: string;
-  services: { service_id: number | null; name: string; price: number | null; duration_min: number }[];
 };
 
-type RawLocation = Omit<Location, "hours"> & { hours: string };
-type RawStaff = Omit<Staff, "schedule" | "service_ids"> & { schedule: string | null };
+const bySort = <T extends { sort: number; id: number }>(a: T, b: T) => a.sort - b.sort || a.id - b.id;
 
-const parseHours = (s: string | null): Hours => (s ? JSON.parse(s) : {});
-
-export function listLocations(opts: { includeInactive?: boolean } = {}): Location[] {
-  const rows = all<RawLocation>(
-    `SELECT * FROM locations ${opts.includeInactive ? "" : "WHERE active = 1 OR coming_soon = 1"} ORDER BY sort, id`
-  );
-  return rows.map((r) => ({ ...r, hours: parseHours(r.hours) }));
+export async function listLocations(opts: { includeInactive?: boolean } = {}): Promise<Location[]> {
+  const filter: Filter<Location> = opts.includeInactive ? {} : { $or: [{ active: 1 }, { coming_soon: 1 }] };
+  return (await (await col<Location>("locations")).find(filter, NO_ID).toArray()).sort(bySort);
 }
-export function getLocation(id: number): Location | undefined {
-  const r = get<RawLocation>("SELECT * FROM locations WHERE id = ?", id);
-  return r && { ...r, hours: parseHours(r.hours) };
+export async function getLocation(id: number) {
+  return (await (await col<Location>("locations")).findOne({ id }, NO_ID)) ?? undefined;
 }
 
-export function listCategories(): Category[] {
-  return all<Category>("SELECT * FROM categories ORDER BY sort, id");
+export async function listCategories(): Promise<Category[]> {
+  return (await (await col<Category>("categories")).find({}, NO_ID).toArray()).sort(bySort);
 }
 
-export function listServices(opts: { includeInactive?: boolean } = {}): Service[] {
-  return all<Service>(
-    `SELECT s.* FROM services s JOIN categories c ON c.id = s.category_id
-     ${opts.includeInactive ? "" : "WHERE s.active = 1"} ORDER BY c.sort, s.sort, s.id`
-  );
+export async function listServices(opts: { includeInactive?: boolean } = {}): Promise<Service[]> {
+  const [cats, services] = await Promise.all([
+    listCategories(),
+    (await col<Service>("services")).find(opts.includeInactive ? {} : { active: 1 }, NO_ID).toArray(),
+  ]);
+  const catOrder = new Map(cats.map((c, i) => [c.id, i]));
+  return services.sort((a, b) => (catOrder.get(a.category_id) ?? 99) - (catOrder.get(b.category_id) ?? 99) || bySort(a, b));
 }
 
-export function catalog() {
-  const categories = listCategories();
-  const services = listServices();
-  return categories
-    .map((c) => ({ ...c, services: services.filter((s) => s.category_id === c.id) }))
-    .filter((c) => c.services.length);
+export async function catalog() {
+  const [categories, services] = await Promise.all([listCategories(), listServices()]);
+  return categories.map((c) => ({ ...c, services: services.filter((s) => s.category_id === c.id) })).filter((c) => c.services.length);
 }
 
-export function listStaff(opts: { includeInactive?: boolean } = {}): Staff[] {
-  const rows = all<RawStaff>(
-    `SELECT * FROM staff ${opts.includeInactive ? "" : "WHERE active = 1"} ORDER BY sort, id`
-  );
-  const links = all<{ staff_id: number; service_id: number }>("SELECT staff_id, service_id FROM staff_services");
-  return rows.map((r) => ({
-    ...r,
-    schedule: parseHours(r.schedule),
-    service_ids: links.filter((l) => l.staff_id === r.id).map((l) => l.service_id),
-  }));
+export async function listStaff(opts: { includeInactive?: boolean } = {}): Promise<Staff[]> {
+  const rows = await (await col<Staff>("staff")).find(opts.includeInactive ? {} : { active: 1 }, NO_ID).toArray();
+  return rows.map((r) => ({ ...r, service_ids: r.service_ids ?? [] })).sort(bySort);
 }
-export function getStaff(id: number) {
-  return listStaff({ includeInactive: true }).find((s) => s.id === id);
+export async function getStaff(id: number) {
+  const r = await (await col<Staff>("staff")).findOne({ id }, NO_ID);
+  return r ? { ...r, service_ids: r.service_ids ?? [] } : undefined;
 }
 
 export function staffCanDo(staff: Staff, serviceIds: number[]) {
   return staff.service_ids.length === 0 || serviceIds.every((id) => staff.service_ids.includes(id));
 }
 
-const BOOKING_SELECT = `
-  SELECT b.*, c.name AS client_name, c.phone AS client_phone, c.email AS client_email,
-         s.name AS staff_name, l.name AS location_name, l.address AS location_address
-  FROM bookings b
-  JOIN clients c ON c.id = b.client_id
-  JOIN staff s ON s.id = b.staff_id
-  JOIN locations l ON l.id = b.location_id`;
-
-function withServices(rows: Omit<Booking, "services">[]): Booking[] {
-  if (!rows.length) return [];
-  const ids = rows.map((r) => r.id);
-  const svc = all<{ booking_id: number } & Booking["services"][number]>(
-    `SELECT * FROM booking_services WHERE booking_id IN (${ids.map(() => "?").join(",")})`,
-    ...ids
-  );
-  return rows.map((r) => ({ ...r, services: svc.filter((s) => s.booking_id === r.id) }));
+export async function getClient(id: number) {
+  return (await (await col<Client>("clients")).findOne({ id }, NO_ID)) ?? undefined;
 }
 
-export function getBookingByCode(code: string): Booking | undefined {
-  return withServices(all(`${BOOKING_SELECT} WHERE b.code = ?`, code.toUpperCase()))[0];
-}
-export function getBooking(id: number): Booking | undefined {
-  return withServices(all(`${BOOKING_SELECT} WHERE b.id = ?`, id))[0];
+/** Resuelve cliente, especialista y sede para una lista de citas (equivalente a los JOIN). */
+async function hydrate(docs: BookingDoc[]): Promise<Booking[]> {
+  if (!docs.length) return [];
+  const [clients, staff, locations] = await Promise.all([
+    (await col<Client>("clients")).find({ id: { $in: [...new Set(docs.map((d) => d.client_id))] } }, NO_ID).toArray(),
+    (await col<Staff>("staff")).find({ id: { $in: [...new Set(docs.map((d) => d.staff_id))] } }, NO_ID).toArray(),
+    (await col<Location>("locations")).find({ id: { $in: [...new Set(docs.map((d) => d.location_id))] } }, NO_ID).toArray(),
+  ]);
+  return docs.map((d) => {
+    const c = clients.find((x) => x.id === d.client_id);
+    const s = staff.find((x) => x.id === d.staff_id);
+    const l = locations.find((x) => x.id === d.location_id);
+    return {
+      ...d,
+      services: d.services ?? [],
+      client_name: c?.name ?? "—",
+      client_phone: c?.phone ?? "",
+      client_email: c?.email ?? null,
+      staff_name: s?.name ?? "—",
+      location_name: l?.name ?? "—",
+      location_address: l?.address ?? "",
+    };
+  });
 }
 
-export function listBookings(f: {
+export async function getBookingByCode(code: string): Promise<Booking | undefined> {
+  const d = await (await col<BookingDoc>("bookings")).findOne({ code: code.toUpperCase() }, NO_ID);
+  return d ? (await hydrate([d]))[0] : undefined;
+}
+export async function getBooking(id: number): Promise<Booking | undefined> {
+  const d = await (await col<BookingDoc>("bookings")).findOne({ id }, NO_ID);
+  return d ? (await hydrate([d]))[0] : undefined;
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+export async function listBookings(f: {
   from?: string;
   to?: string;
   status?: string;
@@ -164,23 +182,29 @@ export function listBookings(f: {
   q?: string;
   limit?: number;
   order?: "asc" | "desc";
-}): Booking[] {
-  const where: string[] = [];
-  const params: unknown[] = [];
-  if (f.from) (where.push("b.date >= ?"), params.push(f.from));
-  if (f.to) (where.push("b.date <= ?"), params.push(f.to));
-  if (f.status) (where.push("b.status = ?"), params.push(f.status));
-  if (f.staffId) (where.push("b.staff_id = ?"), params.push(f.staffId));
-  if (f.locationId) (where.push("b.location_id = ?"), params.push(f.locationId));
-  if (f.clientId) (where.push("b.client_id = ?"), params.push(f.clientId));
+}): Promise<Booking[]> {
+  const filter: Filter<BookingDoc> = {};
+  if (f.from || f.to) filter.date = { ...(f.from && { $gte: f.from }), ...(f.to && { $lte: f.to }) };
+  if (f.status) filter.status = f.status as BookingStatus;
+  if (f.staffId) filter.staff_id = f.staffId;
+  if (f.locationId) filter.location_id = f.locationId;
+  if (f.clientId) filter.client_id = f.clientId;
   if (f.q) {
-    where.push("(c.name LIKE ? OR c.phone LIKE ? OR b.code LIKE ?)");
-    params.push(`%${f.q}%`, `%${f.q}%`, `%${f.q.toUpperCase()}%`);
+    const re = new RegExp(escapeRe(f.q), "i");
+    const ids = (await (await col<Client>("clients")).find({ $or: [{ name: re }, { phone: re }] }, { projection: { id: 1 } }).toArray()).map((c) => c.id);
+    filter.$or = [{ client_id: { $in: ids } }, { code: new RegExp(escapeRe(f.q.toUpperCase())) }];
   }
-  const dir = f.order === "desc" ? "DESC" : "ASC";
-  const sql = `${BOOKING_SELECT} ${where.length ? "WHERE " + where.join(" AND ") : ""}
-    ORDER BY b.date ${dir}, b.start_min ${dir} LIMIT ${f.limit ?? 500}`;
-  return withServices(all(sql, ...params));
+  const dir = f.order === "desc" ? -1 : 1;
+  const docs = await (await col<BookingDoc>("bookings"))
+    .find(filter, NO_ID)
+    .sort({ date: dir, start_min: dir })
+    .limit(f.limit ?? 500)
+    .toArray();
+  return hydrate(docs);
+}
+
+export async function listTimeOff(filter: Filter<TimeOff>) {
+  return (await col<TimeOff>("time_off")).find(filter, NO_ID).sort({ date: 1, start_min: 1 }).toArray();
 }
 
 export const STATUS_LABEL: Record<BookingStatus, string> = {

@@ -11,17 +11,17 @@ export const metadata: Metadata = { title: "Mi cita", robots: { index: false } }
 
 export default async function MiCitaPage({ params }: { params: Promise<{ code: string }> }) {
   const { code } = await params;
-  const b = getBookingByCode(code);
+  const b = await getBookingByCode(code);
   if (!b) notFound();
 
   const now = bogotaNow();
   const upcoming = b.date > now.date || (b.date === now.date && b.start_min > now.minutes);
   const cancellable = upcoming && ["pending", "confirmed"].includes(b.status);
-  const whatsapp = getSetting("salon_whatsapp");
+  const whatsapp = await getSetting("salon_whatsapp");
 
   async function cancel() {
     "use server";
-    const current = getBookingByCode(code);
+    const current = await getBookingByCode(code);
     if (current && ["pending", "confirmed"].includes(current.status)) await setBookingStatus(current.id, "cancelled");
     revalidatePath(`/reserva/${code}`);
   }

@@ -1,14 +1,29 @@
 import "server-only";
-import { all, get, getSetting, run } from "./db";
+import { col, getSettings, nextId, nowIso } from "./db";
 import { addDays, bogotaNow, clock, longDate, prettyPhone } from "./format";
-import { getBooking, type Booking } from "./repo";
+import { getBooking, type Booking, type BookingDoc } from "./repo";
 import { defaultTemplates } from "./seed-data";
 
 export const SITE_URL = (process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000").replace(/\/$/, "");
 
 export type TemplateKey = keyof typeof defaultTemplates;
 
-export function renderTemplate(key: TemplateKey, b: Booking) {
+export type Message = {
+  id: number;
+  booking_id: number | null;
+  channel: string;
+  to_addr: string;
+  template: string;
+  body: string;
+  status: "sent" | "manual" | "failed";
+  provider: string | null;
+  error: string | null;
+  created_at: string;
+  sent_at: string | null;
+};
+
+export async function renderTemplate(key: TemplateKey, b: Booking) {
+  const settings = await getSettings();
   const vars: Record<string, string> = {
     nombre: b.client_name.split(" ")[0],
     cliente: b.client_name,
@@ -23,9 +38,9 @@ export function renderTemplate(key: TemplateKey, b: Booking) {
     origen: b.source,
     link: `${SITE_URL}/reserva/${b.code}`,
     reservar: `${SITE_URL}/reservar`,
-    resena: getSetting("review_url"),
+    resena: settings.review_url,
   };
-  return getSetting(key).replace(/\{(\w+)\}/g, (m, k) => vars[k] ?? m);
+  return settings[key].replace(/\{(\w+)\}/g, (m, k) => vars[k] ?? m);
 }
 
 export function waLink(phone: string, text: string) {
@@ -83,47 +98,46 @@ const SUBJECTS: Partial<Record<TemplateKey, string>> = {
 
 /** Envía una plantilla al cliente (WhatsApp + correo si hay) y la registra en la bandeja de mensajes. */
 export async function notifyClient(bookingId: number, key: TemplateKey) {
-  const b = getBooking(bookingId);
+  const b = await getBooking(bookingId);
   if (!b) return;
-  const body = renderTemplate(key, b);
-  const wa = await sendWhatsApp(b.client_phone, body);
-  log(b.id, "whatsapp", b.client_phone, key, body, wa);
+  const body = await renderTemplate(key, b);
+  await log(b.id, "whatsapp", b.client_phone, key, body, await sendWhatsApp(b.client_phone, body));
   if (b.client_email && process.env.RESEND_API_KEY) {
-    const em = await sendEmail(b.client_email, SUBJECTS[key] ?? "Infante Hair Stylist", body);
-    log(b.id, "email", b.client_email, key, body, em);
+    await log(b.id, "email", b.client_email, key, body, await sendEmail(b.client_email, SUBJECTS[key] ?? "Infante Hair Stylist", body));
   }
 }
 
 /** Aviso interno al WhatsApp del salón. */
 export async function notifySalon(bookingId: number) {
-  const b = getBooking(bookingId);
-  const to = getSetting("salon_whatsapp");
+  const [b, settings] = await Promise.all([getBooking(bookingId), getSettings()]);
+  const to = settings.salon_whatsapp;
   if (!b || !to) return;
-  const body = renderTemplate("tpl_staff_new", b);
-  log(b.id, "whatsapp", to, "tpl_staff_new", body, await sendWhatsApp(to, body));
+  const body = await renderTemplate("tpl_staff_new", b);
+  await log(b.id, "whatsapp", to, "tpl_staff_new", body, await sendWhatsApp(to, body));
 }
 
-function log(bookingId: number, channel: string, to: string, tpl: string, body: string, r: SendResult) {
-  run(
-    `INSERT INTO messages (booking_id, channel, to_addr, template, body, status, provider, error, sent_at)
-     VALUES (?,?,?,?,?,?,?,?, CASE WHEN ? = 'sent' THEN datetime('now') END)`,
-    bookingId,
+async function log(bookingId: number, channel: string, to: string, tpl: string, body: string, r: SendResult) {
+  const now = nowIso();
+  await (await col<Message>("messages")).insertOne({
+    id: await nextId("messages"),
+    booking_id: bookingId,
     channel,
-    to,
-    tpl,
+    to_addr: to,
+    template: tpl,
     body,
-    r.status,
-    r.provider,
-    r.error ?? null,
-    r.status
-  );
+    status: r.status,
+    provider: r.provider,
+    error: r.error ?? null,
+    created_at: now,
+    sent_at: r.status === "sent" ? now : null,
+  });
 }
 
 /** Evento saliente para NovaCall (u otro sistema) — se activa con NOVACALL_WEBHOOK_URL. */
 export async function emitEvent(event: string, bookingId: number) {
   const url = process.env.NOVACALL_WEBHOOK_URL;
   if (!url) return;
-  const b = getBooking(bookingId);
+  const b = await getBooking(bookingId);
   try {
     await fetch(url, {
       method: "POST",
@@ -136,63 +150,60 @@ export async function emitEvent(event: string, bookingId: number) {
   }
 }
 
+const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString();
+
 /**
- * Recordatorios y seguimientos automáticos. Idempotente: marca cada cita al enviar.
+ * Recordatorios y seguimientos automáticos. Idempotente: cada cita se "reclama" con una
+ * actualización condicional antes de enviar, así dos ejecuciones simultáneas no duplican mensajes.
  * Se ejecuta por cron (/api/cron/recordatorios) y también al abrir el panel admin.
  */
 export async function runAutomations() {
   const now = bogotaNow();
-  const tomorrow = addDays(now.date, 1);
+  const settings = await getSettings();
+  const bookings = await col<BookingDoc>("bookings");
   const sent = { reminder24: 0, reminder3: 0, followup: 0 };
 
-  if (getSetting("reminder_24h") === "1") {
-    // Citas de mañana, desde que falten ≤ 24 h
-    const rows = all<{ id: number }>(
-      `SELECT id FROM bookings WHERE status IN ('confirmed','pending') AND reminder_24_at IS NULL
-       AND date = ? AND start_min <= ? AND created_at <= datetime('now','-6 hours')`,
-      tomorrow,
-      now.minutes
-    );
-    for (const r of rows) {
-      run("UPDATE bookings SET reminder_24_at = datetime('now') WHERE id = ?", r.id);
-      await notifyClient(r.id, "tpl_reminder_24h");
-      sent.reminder24++;
+  async function claimAndSend(filter: Record<string, unknown>, field: "reminder_24_at" | "reminder_3_at" | "followup_at", tpl: TemplateKey) {
+    let n = 0;
+    for (const b of await bookings.find({ ...filter, [field]: null }, { projection: { id: 1 } }).toArray()) {
+      const claim = await bookings.updateOne({ id: b.id, [field]: null }, { $set: { [field]: nowIso() } });
+      if (claim.modifiedCount) {
+        await notifyClient(b.id, tpl);
+        n++;
+      }
     }
+    return n;
   }
 
-  if (getSetting("reminder_3h") === "1") {
-    const rows = all<{ id: number }>(
-      `SELECT id FROM bookings WHERE status = 'confirmed' AND reminder_3_at IS NULL
-       AND date = ? AND start_min > ? AND start_min <= ? AND created_at <= datetime('now','-2 hours')`,
-      now.date,
-      now.minutes,
-      now.minutes + 180
+  if (settings.reminder_24h === "1") {
+    // Citas de mañana, desde que falten ≤ 24 h (no a las recién creadas: ya recibieron su confirmación).
+    sent.reminder24 = await claimAndSend(
+      { status: { $in: ["confirmed", "pending"] }, date: addDays(now.date, 1), start_min: { $lte: now.minutes }, created_at: { $lte: hoursAgo(6) } },
+      "reminder_24_at",
+      "tpl_reminder_24h"
     );
-    for (const r of rows) {
-      run("UPDATE bookings SET reminder_3_at = datetime('now') WHERE id = ?", r.id);
-      await notifyClient(r.id, "tpl_reminder_3h");
-      sent.reminder3++;
-    }
   }
-
-  if (getSetting("followup") === "1") {
-    const rows = all<{ id: number }>(
-      `SELECT id FROM bookings WHERE status = 'completed' AND followup_at IS NULL
-       AND (date < ? OR (date = ? AND end_min + 60 <= ?)) AND date >= ?`,
-      now.date,
-      now.date,
-      now.minutes,
-      addDays(now.date, -3)
+  if (settings.reminder_3h === "1") {
+    sent.reminder3 = await claimAndSend(
+      { status: "confirmed", date: now.date, start_min: { $gt: now.minutes, $lte: now.minutes + 180 }, created_at: { $lte: hoursAgo(2) } },
+      "reminder_3_at",
+      "tpl_reminder_3h"
     );
-    for (const r of rows) {
-      run("UPDATE bookings SET followup_at = datetime('now') WHERE id = ?", r.id);
-      await notifyClient(r.id, "tpl_followup");
-      sent.followup++;
-    }
+  }
+  if (settings.followup === "1") {
+    sent.followup = await claimAndSend(
+      {
+        status: "completed",
+        date: { $gte: addDays(now.date, -3), $lte: now.date },
+        $or: [{ date: { $lt: now.date } }, { end_min: { $lte: now.minutes - 60 } }],
+      },
+      "followup_at",
+      "tpl_followup"
+    );
   }
   return sent;
 }
 
-export function pendingManualCount() {
-  return get<{ n: number }>("SELECT COUNT(*) AS n FROM messages WHERE status = 'manual'")?.n ?? 0;
+export async function pendingManualCount() {
+  return (await col<Message>("messages")).countDocuments({ status: "manual" });
 }
