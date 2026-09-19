@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-export const UPLOAD_DIR = path.join(process.cwd(), "data", "uploads");
+export const UPLOAD_DIR = process.env.VERCEL ? "/tmp/uploads" : path.join(process.cwd(), "data", "uploads");
 const ALLOWED = new Set([".jpg", ".jpeg", ".png", ".webp", ".avif"]);
 
 /** Guarda una foto subida desde el admin y devuelve su URL pública (/media/...). */

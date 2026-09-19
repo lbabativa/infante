@@ -11,7 +11,7 @@
     "db:reset": "node -e \"require('fs').rmSync('data/infante.db',{force:true});console.log('Base de datos eliminada; se re-crea con datos semilla al iniciar.')\""
   },
   "engines": {
-    "node": ">=22.13"
+    "node": "24.x"
   },
   "dependencies": {
     "lucide-react": "^1.47.0",

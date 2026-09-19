@@ -5,7 +5,9 @@ import path from "node:path";
 import { defaultTemplates, seedCategories, seedLocation, seedTeam } from "./seed-data";
 import { slugify } from "./format";
 
-const DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "infante.db");
+// En Vercel solo /tmp es escribible (efímero: se reinicia con cada despliegue o instancia nueva).
+const DB_PATH =
+  process.env.DATABASE_PATH || (process.env.VERCEL ? "/tmp/infante.db" : path.join(process.cwd(), "data", "infante.db"));
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS locations (
