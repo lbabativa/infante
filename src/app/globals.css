@@ -52,6 +52,15 @@ body {
   color: transparent;
 }
 
+/* Entrada suave del hero */
+.fade-up {
+  animation: fade-up 0.9s var(--ease-silk) both;
+}
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: none; }
+}
+
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { scrollbar-width: none; }
 
