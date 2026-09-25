@@ -27,7 +27,6 @@ export function BookingWizard({
   const allServices = useMemo(() => categories.flatMap((c) => c.services), [categories]);
 
   const [step, setStep] = useState(0);
-  const [dir, setDir] = useState(1);
   const [locationId, setLocationId] = useState(initial.locationId ?? open[0]?.id);
   const [serviceIds, setServiceIds] = useState<number[]>(initial.serviceId ? [initial.serviceId] : []);
   const [staffId, setStaffId] = useState<number | null>(initial.staffId ?? null);
@@ -64,7 +63,6 @@ export function BookingWizard({
   }, [serviceIds, staffId, date, locationId]);
 
   function go(n: number) {
-    setDir(n > step ? 1 : -1);
     setStep(n);
     setError(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -142,15 +140,7 @@ export function BookingWizard({
           </div>
         )}
 
-        <AnimatePresence mode="wait" custom={dir}>
-          <motion.div
-            key={step}
-            custom={dir}
-            initial={{ opacity: 0, x: dir * 50 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: dir * -50 }}
-            transition={{ duration: 0.45, ease: EASE }}
-          >
+        <div>
             {step === 0 && <StepServices categories={categories} selected={serviceIds} onToggle={(id) => setServiceIds((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))} />}
             {step === 1 && (
               <StepStaff
@@ -175,8 +165,7 @@ export function BookingWizard({
               />
             )}
             {step === 3 && <StepDetails form={form} setForm={setForm} consent={consent} setConsent={setConsent} />}
-          </motion.div>
-        </AnimatePresence>
+        </div>
 
         {error && (
           <motion.p initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="mt-6 rounded-xl border border-blush/40 bg-blush/10 px-4 py-3 text-sm text-blush">

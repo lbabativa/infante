@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { MaskText, Reveal } from "@/components/site/Reveal";
 import { duration, priceLabel } from "@/lib/format";
 import { publicCatalog } from "@/lib/public-data";
 
@@ -12,10 +11,10 @@ export const metadata: Metadata = {
 export default async function ServiciosPage() {
   const categories = await publicCatalog();
   return (
-    <div className="mx-auto max-w-[1400px] px-5 pb-32 pt-40 md:px-10">
+    <div className="mx-auto max-w-[1400px] px-5 pb-24 pt-32 md:px-10">
       <p className="eyebrow text-champagne">— Carta de servicios</p>
-      <h1 className="mt-4 font-display text-[16vw] leading-[0.85] md:text-[9rem]">
-        <MaskText lines={["Servicios", <em key="p" className="text-gold">& precios</em>]} />
+      <h1 className="mt-4 font-display text-6xl leading-[0.95] md:text-7xl">
+        Servicios <em className="text-gold">&amp; precios</em>
       </h1>
       <p className="mt-8 max-w-xl text-sand">
         Precios de referencia en pesos colombianos. Los servicios marcados “desde” dependen del largo y la densidad del cabello: tu estilista
@@ -33,17 +32,14 @@ export default async function ServiciosPage() {
       <div className="mt-10 space-y-24">
         {categories.map((c, ci) => (
           <section key={c.id} id={c.slug} className="grid scroll-mt-40 gap-8 md:grid-cols-[1fr_2fr]">
-            <Reveal>
               <div className="md:sticky md:top-44">
                 <span className="eyebrow text-champagne">{String(ci + 1).padStart(2, "0")}</span>
                 <h2 className="mt-2 font-display text-5xl md:text-6xl">{c.name}</h2>
                 <p className="mt-3 max-w-xs font-display text-lg italic text-sand">{c.tagline}</p>
               </div>
-            </Reveal>
             <ul>
-              {c.services.map((s, i) => (
-                <Reveal key={s.id} delay={Math.min(i, 6) * 0.04} y={20}>
-                  <li className="group flex flex-col gap-3 border-b border-white/10 py-6 sm:flex-row sm:items-start">
+              {c.services.map((s) => (
+                  <li key={s.id} className="flex flex-col gap-3 border-b border-white/10 py-6 sm:flex-row sm:items-start">
                     <div className="min-w-0 flex-1">
                       <h3 className="text-xl">
                         {s.name}
@@ -62,7 +58,6 @@ export default async function ServiciosPage() {
                       </Link>
                     </div>
                   </li>
-                </Reveal>
               ))}
             </ul>
           </section>

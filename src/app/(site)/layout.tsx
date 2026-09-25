@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 export default async function SiteLayout({ children }: { children: React.ReactNode }) {
   const c = await contact();
   return (
-    <div className="grain relative">
+    <div className="relative">
       <Nav />
       <main>{children}</main>
       <Footer whatsapp={c.whatsapp} instagram={c.instagram} />
